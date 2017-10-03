@@ -237,6 +237,47 @@ xgb_tune <- function(data_y, data_x, subsample, colsample, depth, ntrees) {
     stopCluster(cl)
 }
 
+# Arima gridSearch tuning function
+arima_tune <- function(train_ts, test_y, p, q, ft, lambda = 1) {
+    require(foreach)
+    require(doParallel)
+    require(dplyr)
+    require(tidyr)
+    require(forecast)
+    paramGrid <- expand.grid(p = p,
+                             q = q,
+                             ft = ft)
+    cores <- detectCores()
+    cl <- makeCluster(cores[1] - 1)
+    registerDoParallel(cl)
+    final_data <- foreach(i = 1:nrow(paramGrid),
+                          .combine = rbind,
+                          .packages = c("forecast"),
+                          .errorhandling = "remove"
+    ) %dopar% {
+        p <- paramGrid[i, "p"]
+        q <- paramGrid[i, "q"]
+        ft <- paramGrid[i, "ft"]
+        rmse <- function(actual, pred) {
+            rmse <- sqrt(mean(abs(actual - pred)^2))
+            return(rmse)
+        }
+        fit <- Arima(train_ts, 
+                     xreg = fourier(train_ts, K = ft),
+                     order = c(p, 1, q),
+                     lambda = lambda)
+        forecast_fit <- forecast(fit, 
+                                 xreg = fourier(train_ts, K = ft, h = length(test_y)),
+                                 h = length(test_y))
+        data.frame(rmse = rmse(test_y,
+                               forecast_fit$mean),
+                   p = p,
+                   q = q,
+                   ft = ft)
+    }
+    stopCluster(cl)
+}
+
 # EVALUATION METRICS
 mape <- function(actual,pred) {
     mape <- mean(abs((actual - pred)/actual))*100
