@@ -4,7 +4,7 @@ load_packages <- function(package_vector, edward = FALSE) {
         package_vector <- c("tidyr", "dplyr", "ggplot2", 
                             "GGally", "lubridate", "foreach",
                             "doParallel", "xgboost", "Matrix",
-                            "caret", "forecast")
+                            "caret", "forecast", "RODBC")
     }
     for (i in package_vector) {
         if(!require(i, character.only=TRUE)) install.packages(i)
@@ -14,6 +14,48 @@ load_packages <- function(package_vector, edward = FALSE) {
 
 mround <- function(x,base){
   base*round(x/base)
+}
+
+apply_ch_model <- function(data, column_name) {
+    wm_fit <- readRDS("Model Training/wm_fit_rf.rds")
+    kr_fit <- readRDS("Model Training/kr_fit_rf.rds")
+    ch_fit <- readRDS("Model Training/ch_fit_rf.rds")
+    wm_clmn <- grepl_column("wm_", data)
+    kr_clmn <- grepl_column("kr_", data)
+    for (i in 1:nrow(data)) {
+        #message(paste0("iteration: ", i))
+        if (all(!is.na(data[i, wm_clmn])) & length(kr_clmn) > 0) {
+            data[i, column_name] <- predict(wm_fit, data[i, ])
+        } else if (all(!is.na(data[i, kr_clmn])) & length(kr_clmn) > 0) {
+            data[i, column_name] <- predict(kr_fit, data[i, ])
+        } else {
+            data[i, column_name] <- predict(ch_fit, data[i, ])
+        }
+    }
+    return(data)
+}
+
+grepl_column <- function(pattern, data) {
+    colnames(data)[grepl(pattern, colnames(data))]
+}
+
+moveMe <- function(data, tomove, where = "last", ba = NULL) {
+    temp <- setdiff(names(data), tomove)
+    x <- switch(
+        where,
+        first = data[c(tomove, temp)],
+        last = data[c(temp, tomove)],
+        before = {
+            if (is.null(ba)) stop("must specify ba column")
+            if (length(ba) > 1) stop("ba must be a single character string")
+            data[append(temp, values = tomove, after = (match(ba, temp)-1))]
+        },
+        after = {
+            if (is.null(ba)) stop("must specify ba column")
+            if (length(ba) > 1) stop("ba must be a single character string")
+            data[append(temp, values = tomove, after = (match(ba, temp)))]
+        })
+    x
 }
 
 # VECTORIZED NORMALIZATION OF VARIABLES
@@ -120,7 +162,7 @@ interact <- function(data, leftSide, rightSide) {
   eval(parse(text = sub("z = s", s, deparse(q))))
 }
 
-# PARALLELIZED DUMMY ONEHOT ENCODING
+# PARALLELIZED DUMMY ENCODING
 par_dummy <- function(data, variables, id) {
   require(foreach)
   require(doParallel)
@@ -148,7 +190,7 @@ par_dummy <- function(data, variables, id) {
   return(final_data)
 }
 
-# CLASSIC DUMMY ONEHOT ENCODING
+# CLASSIC DUMMY ENCODING
 dummy <- function(data, variables, id) {
   require(foreach)
   require(doParallel)
@@ -183,9 +225,26 @@ set_na <- function(data, columns, value) {
   }
   return(temp)
 }
-
+# CHECKS IF THE COLUMNS EXIST, IF NOT ADDS THEM WITH THE SPECIFIED VALUE
+add_columns <- function(data, columns_to_check, value) {
+    require(dplyr)
+    temp <- data
+    for (name in columns_to_check) {
+        if (name %in% colnames(data)) {
+            next
+        } else {
+            t_parse <- paste0("x", " = " , value)
+            temp <- temp %>%
+                mutate_(.dots = setNames(lazyeval::interp(t_parse, 
+                                                          x = as.name(name)), 
+                                         name))
+        }
+    }
+    return(temp)
+}
 # XGB GRIDSEARCH TUNING
-xgb_tune <- function(data_y, data_x, subsample, colsample, depth, ntrees) {
+# XGB GRIDSEARCH TUNING
+xgb_tune <- function(data_y, data_x, subsample, colsample, depth, ntrees, lambda) {
     require(foreach)
     require(doParallel)
     require(dplyr)
@@ -212,7 +271,8 @@ xgb_tune <- function(data_y, data_x, subsample, colsample, depth, ntrees) {
                                  nthread = 1,
                                  showsd = TRUE, 
                                  metrics = "rmse", 
-                                 verbose = TRUE, 
+                                 verbose = TRUE,
+                                 lambda = lambda,
                                  eval_metric = "rmse",
                                  objective = "reg:linear", 
                                  eta = 2/ntrees,                               
@@ -237,8 +297,8 @@ xgb_tune <- function(data_y, data_x, subsample, colsample, depth, ntrees) {
     stopCluster(cl)
 }
 
-# Arima gridSearch tuning function
-arima_tune <- function(train_ts, test_y, p, q, ft, lambda = 1) {
+# automated gridSearch forecast tuning
+forecast_tune <- function(train_ts, test_y, p, q, ft, lambda = 1) {
     require(foreach)
     require(doParallel)
     require(dplyr)
@@ -276,6 +336,11 @@ arima_tune <- function(train_ts, test_y, p, q, ft, lambda = 1) {
                    ft = ft)
     }
     stopCluster(cl)
+    # select the model with the lowest RMSE
+    final_data <- final_data %>%
+        arrange(rmse) %>%
+        top_n(1, desc(rmse))
+    return(final_data)
 }
 
 # EVALUATION METRICS
@@ -285,5 +350,5 @@ mape <- function(actual,pred) {
 }
 rmse <- function(actual, pred) {
     rmse <- sqrt(mean(abs(actual - pred)^2))
-    return (rmse)
+    return(rmse)
 }
