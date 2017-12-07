@@ -60,6 +60,21 @@ col_rename <- function(x, ...) {
     return(x)
 }
 
+# set character columns to lower
+col_tolower <- function(data, exclude = NULL) {
+    if (class(data) != "data.frame") {
+        stop(paste0("input data is not class data.frame"))
+    }
+    for (i in setdiff(colnames(data), exclude)) {
+        if (class(data[ , i]) == "character") {
+            data[ , i] <- tolower(data[ , i])
+        } else {
+            next
+        }
+    }
+    return(data)
+}
+
 # Set NA elements to a specified value
 set_na <- function(data, columns, value) {
     temp <- data
